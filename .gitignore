@@ -6,3 +6,6 @@ models
 vcomp140.dll
 vcomp140d.dll
 *.jpg
+.venv
+dependencies
+quickbms
