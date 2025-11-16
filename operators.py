@@ -208,6 +208,31 @@ class OBJECT_OT_bake_scvi_material(bpy.types.Operator, ImportHelper):
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
+    
+    def get_material_texture_size(self, mat):
+        """
+        Detecta el tamaño de las texturas en un material.
+        Retorna (width, height) o None si no encuentra texturas.
+        """
+        if not mat or not mat.use_nodes:
+            return None
+        
+        texture_sizes = []
+        nodes = mat.node_tree.nodes
+        
+        # Buscar todos los nodos de textura de imagen
+        for node in nodes:
+            if isinstance(node, bpy.types.ShaderNodeTexImage):
+                if node.image and node.image.size[0] > 0 and node.image.size[1] > 0:
+                    texture_sizes.append((node.image.size[0], node.image.size[1]))
+        
+        if not texture_sizes:
+            return None
+        
+        # Si hay múltiples texturas, usar la más grande
+        # (esto asegura que no perdamos detalles)
+        max_size = max(texture_sizes, key=lambda x: x[0] * x[1])
+        return max_size
 
     def bake_single_material(self, context, obj, mat, mat_index, output_path):
         """
@@ -222,6 +247,16 @@ class OBJECT_OT_bake_scvi_material(bpy.types.Operator, ImportHelper):
         links = nt.links
         
         print(f"\n--- Baking: {mat.name} (index {mat_index}) ---")
+        
+        # Detectar tamaño de texturas del material
+        detected_size = self.get_material_texture_size(mat)
+        if detected_size:
+            bake_width, bake_height = detected_size
+            print(f"  Detected texture size: {bake_width}x{bake_height}")
+        else:
+            # Si no hay texturas, usar la resolución del usuario (cuadrada)
+            bake_width = bake_height = self.bake_resolution
+            print(f"  No textures found, using default: {bake_width}x{bake_height}")
         
         # Verificar Material Output
         output = next((n for n in nodes if isinstance(n, bpy.types.ShaderNodeOutputMaterial)), None)
@@ -248,7 +283,9 @@ class OBJECT_OT_bake_scvi_material(bpy.types.Operator, ImportHelper):
         import uuid
         unique = uuid.uuid4().hex[:8]
         img_name = f"{mat.name}_Baked_{unique}"
-        bake_img = bpy.data.images.new(img_name, width=self.bake_resolution, height=self.bake_resolution)
+        
+        # USAR EL TAMAÑO DETECTADO en lugar de resolución fija
+        bake_img = bpy.data.images.new(img_name, width=bake_width, height=bake_height)
         bake_img.filepath_raw = output_path
         bake_img.file_format = 'PNG'
         bake_node.image = bake_img
@@ -330,9 +367,10 @@ class OBJECT_OT_bake_scvi_material(bpy.types.Operator, ImportHelper):
             non_black = sum(1 for p in pixels if p > 0.01)
             
             print(f"  Non-black pixels: {non_black}/{len(pixels)}")
+            print(f"  Saved as: {bake_width}x{bake_height}")
             
             success = non_black > 0
-            message = f"✓ {mat.name}" if success else f"✗ {mat.name} (negro)"
+            message = f"✓ {mat.name} ({bake_width}x{bake_height})" if success else f"✗ {mat.name} (negro)"
             
             return (success, message, non_black)
             
@@ -376,6 +414,7 @@ class OBJECT_OT_bake_scvi_material(bpy.types.Operator, ImportHelper):
                 bpy.data.images.remove(bake_img)
             except:
                 pass
+
 
     def execute(self, context):
         obj = context.active_object
