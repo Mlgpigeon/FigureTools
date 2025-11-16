@@ -234,6 +234,99 @@ class OBJECT_OT_bake_scvi_material(bpy.types.Operator, ImportHelper):
         max_size = max(texture_sizes, key=lambda x: x[0] * x[1])
         return max_size
 
+
+    def get_material_uv_tile(self, obj, mat_index):
+        """
+        Detecta en qué UDIM tile están los UVs de un material.
+        Usa el tile donde están la MAYORÍA de los UVs.
+        Retorna (tile_u, tile_v) - el desplazamiento del tile principal.
+        """
+        mesh = obj.data
+        if not mesh.uv_layers.active:
+            return (0, 0)
+        
+        uv_layer = mesh.uv_layers.active.data
+        
+        # Contar UVs por tile
+        import math
+        from collections import defaultdict
+        
+        tile_counts = defaultdict(int)
+        
+        for poly in mesh.polygons:
+            if poly.material_index == mat_index:
+                for loop_idx in poly.loop_indices:
+                    uv = uv_layer[loop_idx].uv
+                    # Determinar tile de este UV
+                    tile_u = math.floor(uv.x)
+                    tile_v = math.floor(uv.y)
+                    tile_counts[(tile_u, tile_v)] += 1
+        
+        if not tile_counts:
+            return (0, 0)
+        
+        # Encontrar el tile con MÁS UVs (tile dominante)
+        dominant_tile = max(tile_counts.items(), key=lambda x: x[1])
+        tile_coords = dominant_tile[0]
+        tile_count = dominant_tile[1]
+        total_uvs = sum(tile_counts.values())
+        
+        # Debug: mostrar distribución de tiles
+        if len(tile_counts) > 1:
+            print(f"  ⚠ Material has UVs in {len(tile_counts)} different tiles:")
+            for (u, v), count in sorted(tile_counts.items(), key=lambda x: -x[1]):
+                percentage = (count / total_uvs) * 100
+                marker = "← DOMINANT" if (u, v) == tile_coords else ""
+                print(f"    Tile U+{u}, V+{v}: {count} UVs ({percentage:.1f}%) {marker}")
+        
+        return tile_coords
+
+    def offset_uvs_to_main_tile(self, obj, mat_index, tile_offset):
+        """
+        Mueve temporalmente SOLO los UVs del tile dominante al tile principal (0-1).
+        Ignora UVs que ya están en otros tiles para evitar romperlos.
+        Retorna lista de índices de loops modificados para poder revertir.
+        """
+        mesh = obj.data
+        if not mesh.uv_layers.active:
+            return []
+        
+        uv_layer = mesh.uv_layers.active.data
+        tile_u, tile_v = tile_offset
+        
+        modified_loops = []
+        import math
+        
+        for poly in mesh.polygons:
+            if poly.material_index == mat_index:
+                for loop_idx in poly.loop_indices:
+                    uv = uv_layer[loop_idx].uv
+                    
+                    # Determinar en qué tile está este UV específico
+                    current_tile_u = math.floor(uv.x)
+                    current_tile_v = math.floor(uv.y)
+                    
+                    # SOLO mover si está en el tile dominante
+                    if (current_tile_u, current_tile_v) == (tile_u, tile_v):
+                        # Guardar estado original y mover al tile principal
+                        modified_loops.append((loop_idx, uv.x, uv.y))
+                        uv_layer[loop_idx].uv = (uv.x - tile_u, uv.y - tile_v)
+        
+        return modified_loops
+
+    def restore_uvs(self, obj, modified_loops):
+        """
+        Restaura los UVs a su posición original.
+        """
+        mesh = obj.data
+        if not mesh.uv_layers.active:
+            return
+        
+        uv_layer = mesh.uv_layers.active.data
+        
+        for loop_idx, orig_u, orig_v in modified_loops:
+            uv_layer[loop_idx].uv = (orig_u, orig_v)
+
     def bake_single_material(self, context, obj, mat, mat_index, output_path):
         """
         Bakea un solo material del objeto
@@ -258,6 +351,16 @@ class OBJECT_OT_bake_scvi_material(bpy.types.Operator, ImportHelper):
             bake_width = bake_height = self.bake_resolution
             print(f"  No textures found, using default: {bake_width}x{bake_height}")
         
+        # ===== NUEVO: Detectar UDIM tile =====
+        tile_offset = self.get_material_uv_tile(obj, mat_index)
+        tile_u, tile_v = tile_offset
+
+        if tile_offset != (0, 0):
+            print(f"  Detected UDIM tile offset: U+{tile_u}, V+{tile_v}")
+            # Añadir info del tile al nombre del archivo
+            base_path, ext = os.path.splitext(output_path)
+            output_path = f"{base_path}_tile_{tile_u}_{tile_v}{ext}"
+
         # Verificar Material Output
         output = next((n for n in nodes if isinstance(n, bpy.types.ShaderNodeOutputMaterial)), None)
         if not output:
@@ -336,6 +439,13 @@ class OBJECT_OT_bake_scvi_material(bpy.types.Operator, ImportHelper):
         
         mesh.update()
         
+        # ===== NUEVO: Mover UVs temporalmente =====
+        modified_loops = []
+        if tile_offset != (0, 0):
+            modified_loops = self.offset_uvs_to_main_tile(obj, mat_index, tile_offset)
+            mesh.update()
+            print(f"  Moved {len(modified_loops)} UV loops to main tile")
+
         scene = context.scene
         temp_emit = None
         
@@ -379,6 +489,13 @@ class OBJECT_OT_bake_scvi_material(bpy.types.Operator, ImportHelper):
             
         finally:
             # ========== RESTAURAR TODO AL ESTADO ORIGINAL ==========
+
+            # ===== NUEVO: Restaurar UVs originales =====
+            if modified_loops:
+                self.restore_uvs(obj, modified_loops)
+                mesh.update()
+                print(f"  Restored {len(modified_loops)} UV loops to original position")
+
             # 1. Restaurar estado de caras
             for i, poly in enumerate(mesh.polygons):
                 poly.hide = original_hide_state.get(i, False)
