@@ -891,6 +891,63 @@ class OBJECT_OT_deselect_all_materials(bpy.types.Operator):
         return {'FINISHED'}
 
 
+import subprocess
+import sys
+from pathlib import Path
+
+class OBJECT_OT_launch_transform_tool(bpy.types.Operator):
+    """Launch Transform Tool (combined_mirrorer.py)"""
+    bl_idname = "figure_tools.launch_transform_tool"
+    bl_label = "Transform Tools"
+    bl_description = "Launch the Transform Tool GUI for texture and model processing"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        try:
+            addon_dir = Path(__file__).resolve().parent
+            transform_dir = addon_dir / "realesrgan" / "Transform Tool"
+            
+            if sys.platform == "win32":
+                bat_path = transform_dir / "mirror.bat"
+                
+                if not bat_path.exists():
+                    self.report({'ERROR'}, f"mirror.bat not found")
+                    return {'CANCELLED'}
+                
+                # Execute mirror.bat which handles everything
+                subprocess.Popen(
+                    [str(bat_path)],
+                    cwd=str(transform_dir),
+                    shell=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                
+                self.report({'INFO'}, "Transform Tool launched")
+                return {'FINISHED'}
+            else:
+                # For non-Windows systems
+                script_path = transform_dir / "combined_mirrorer.py"
+                venv_python = transform_dir / ".venv" / "bin" / "python"
+                
+                if venv_python.exists():
+                    python_exe = venv_python
+                else:
+                    python_exe = sys.executable
+                
+                subprocess.Popen(
+                    [str(python_exe), str(script_path)],
+                    cwd=str(transform_dir)
+                )
+                
+                self.report({'INFO'}, "Transform Tool launched")
+                return {'FINISHED'}
+                
+        except Exception as e:
+            import traceback
+            print(traceback.format_exc())
+            self.report({'ERROR'}, f"Failed to launch: {str(e)}")
+            return {'CANCELLED'}
+
 # -----------------------------------------------------------------------------
 # Original Operators (unchanged)
 # -----------------------------------------------------------------------------
@@ -1069,6 +1126,10 @@ class VIEW3D_PT_upscale_tools(bpy.types.Panel):
         # Is Figure toggle
         layout.prop(obj, "is_figure", text="Is Figure")
         
+        layout.separator()
+        layout.operator("figure_tools.launch_transform_tool", text="Transform Tools", icon='TOOL_SETTINGS')
+        layout.separator()
+
         # Process Images button
         layout.operator("figure_tools.process_images", text="Process Images")
         
@@ -1192,6 +1253,7 @@ classes = [
     OBJECT_OT_generate_sv_eye_material,
     OBJECT_OT_bake_eye_texture,
     OBJECT_OT_bake_scvi_material,
+    OBJECT_OT_launch_transform_tool,
     VIEW3D_PT_upscale_tools,
 ]
 
